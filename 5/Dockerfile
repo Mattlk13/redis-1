@@ -5,43 +5,30 @@ RUN groupadd -r -g 999 redis && useradd -r -g redis -u 999 redis
 
 # grab gosu for easy step-down from root
 # https://github.com/tianon/gosu/releases
-ENV GOSU_VERSION 1.11
+ENV GOSU_VERSION 1.12
 RUN set -eux; \
-# save list of currently installed packages for later so we can clean up
 	savedAptMark="$(apt-mark showmanual)"; \
 	apt-get update; \
-	apt-get install -y --no-install-recommends \
-		ca-certificates \
-		dirmngr \
-		gnupg \
-		wget \
-	; \
+	apt-get install -y --no-install-recommends ca-certificates dirmngr gnupg wget; \
 	rm -rf /var/lib/apt/lists/*; \
-	\
 	dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
 	wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch"; \
 	wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc"; \
-	\
-# verify the signature
 	export GNUPGHOME="$(mktemp -d)"; \
 	gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
 	gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
 	gpgconf --kill all; \
 	rm -rf "$GNUPGHOME" /usr/local/bin/gosu.asc; \
-	\
-# clean up fetch dependencies
 	apt-mark auto '.*' > /dev/null; \
 	[ -z "$savedAptMark" ] || apt-mark manual $savedAptMark > /dev/null; \
 	apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
-	\
 	chmod +x /usr/local/bin/gosu; \
-# verify that the binary works
 	gosu --version; \
 	gosu nobody true
 
-ENV REDIS_VERSION 4.0.14
-ENV REDIS_DOWNLOAD_URL http://download.redis.io/releases/redis-4.0.14.tar.gz
-ENV REDIS_DOWNLOAD_SHA 1e1e18420a86cfb285933123b04a82e1ebda20bfb0a289472745a087587e93a7
+ENV REDIS_VERSION 5.0.12
+ENV REDIS_DOWNLOAD_URL http://download.redis.io/releases/redis-5.0.12.tar.gz
+ENV REDIS_DOWNLOAD_SHA 7040eba5910f7c3d38f05ea5a1d88b480488215bdbd2e10ec70d18380108e31e
 
 RUN set -eux; \
 	\
@@ -51,6 +38,7 @@ RUN set -eux; \
 		ca-certificates \
 		wget \
 		\
+		dpkg-dev \
 		gcc \
 		libc6-dev \
 		make \
@@ -65,7 +53,7 @@ RUN set -eux; \
 	\
 # disable Redis protected mode [1] as it is unnecessary in context of Docker
 # (ports are not automatically exposed when running inside Docker, but rather explicitly by specifying -p / -P)
-# [1]: https://github.com/antirez/redis/commit/edd4d555df57dc84265fdfb4ef59a4678832f6da
+# [1]: https://github.com/redis/redis/commit/edd4d555df57dc84265fdfb4ef59a4678832f6da
 	grep -q '^#define CONFIG_DEFAULT_PROTECTED_MODE 1$' /usr/src/redis/src/server.h; \
 	sed -ri 's!^(#define CONFIG_DEFAULT_PROTECTED_MODE) 1$!\1 0!' /usr/src/redis/src/server.h; \
 	grep -q '^#define CONFIG_DEFAULT_PROTECTED_MODE 0$' /usr/src/redis/src/server.h; \
@@ -73,10 +61,25 @@ RUN set -eux; \
 # see also https://github.com/docker-library/redis/issues/4#issuecomment-50780840
 # (more exactly, this makes sure the default behavior of "save on SIGTERM" stays functional by default)
 	\
+# https://github.com/jemalloc/jemalloc/issues/467 -- we need to patch the "./configure" for the bundled jemalloc to match how Debian compiles, for compatibility
+# (also, we do cross-builds, so we need to embed the appropriate "--build=xxx" values to that "./configure" invocation)
+	gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)"; \
+	extraJemallocConfigureFlags="--build=$gnuArch"; \
+# https://salsa.debian.org/debian/jemalloc/-/blob/c0a88c37a551be7d12e4863435365c9a6a51525f/debian/rules#L8-23
+	dpkgArch="$(dpkg --print-architecture)"; \
+	case "${dpkgArch##*-}" in \
+		amd64 | i386 | x32) extraJemallocConfigureFlags="$extraJemallocConfigureFlags --with-lg-page=12" ;; \
+		*) extraJemallocConfigureFlags="$extraJemallocConfigureFlags --with-lg-page=16" ;; \
+	esac; \
+	extraJemallocConfigureFlags="$extraJemallocConfigureFlags --with-lg-hugepage=21"; \
+	grep -F 'cd jemalloc && ./configure ' /usr/src/redis/deps/Makefile; \
+	sed -ri 's!cd jemalloc && ./configure !&'"$extraJemallocConfigureFlags"' !' /usr/src/redis/deps/Makefile; \
+	grep -F "cd jemalloc && ./configure $extraJemallocConfigureFlags " /usr/src/redis/deps/Makefile; \
+	\
 	make -C /usr/src/redis -j "$(nproc)" all; \
 	make -C /usr/src/redis install; \
 	\
-# TODO https://github.com/antirez/redis/pull/3494 (deduplicate "redis-server" copies)
+# TODO https://github.com/redis/redis/pull/3494 (deduplicate "redis-server" copies)
 	serverMd5="$(md5sum /usr/local/bin/redis-server | cut -d' ' -f1)"; export serverMd5; \
 	find /usr/local/bin/redis* -maxdepth 0 \
 		-type f -not -name redis-server \
