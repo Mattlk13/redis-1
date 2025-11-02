@@ -1,7 +1,7 @@
 {
   "6.2": {
     "version": "6.2.21",
-    "url": "http://download.redis.io/releases/redis-6.2.20.tar.gz",
+    "url": "http://download.redis.io/releases/redis-6.2.21.tar.gz",
     "sha256": "6383b32ba8d246f41bbbb83663381f5a5f4c4713235433cec22fc4a47e9b6d5f",
     "debian": {
       "version": "bookworm"
